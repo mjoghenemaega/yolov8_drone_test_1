@@ -1,11 +1,13 @@
 import os
 import cv2
 import time
-import pandas as pd
 import numpy as np
+import pygame
+import pandas as pd
 from ultralytics import YOLO
 from djitellopy import Tello
 import keypressModule as kp
+import numpy as np
 
 # Initialize keypress module
 kp.init()
@@ -22,7 +24,6 @@ model = YOLO('yolov8s.pt')
 # Load class labels from coco.txt file
 with open("coco.txt", "r") as my_file:
     class_list = my_file.read().split("\n")
-print(class_list)
 
 # Define the output folder path and create it if it doesn't exist
 output_folder = "./pictures"
@@ -31,6 +32,18 @@ os.makedirs(output_folder, exist_ok=True)
 # Initialize flags and counters
 person_detected = False
 image_count = 0  # Counter for saved images
+
+# Initialize Pygame and create a window
+pygame.init()
+window_width, window_height = 1280, 960
+window = pygame.display.set_mode((window_width, window_height))
+pygame.display.set_caption("Tello Video Feed")
+
+# Function to convert OpenCV frame to Pygame surface
+def cv2_to_pygame(frame):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_surface = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+    return frame_surface
 
 def getKeyboardInput():
     lr, fb, ud, yv = 0, 0, 0, 0
@@ -50,33 +63,32 @@ def getKeyboardInput():
     if kp.getKey("t"): tello.takeoff()
     if kp.getKey("q"): tello.land()
 
-    # Manual capture with 'z' key
-    if kp.getKey("z"):
-        image_filename = os.path.join("Resources/Images", f"{time.time()}.jpg")
-        cv2.imwrite(image_filename, img)
-        print(f"Image saved: {image_filename}")
-        time.sleep(0.3)
-
     return [lr, fb, ud, yv]
 
-while True:
-    # Get keyboard input for drone control
+running = True
+while running:
+    # Handle Pygame events
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+    # Get keyboard input and control the Tello
     vals = getKeyboardInput()
     tello.send_rc_control(vals[0], vals[1], vals[2], vals[3])
 
     # Get frame from Tello
     img = tello.get_frame_read().frame
     if img is None:
-        break
+        continue
 
-    # Resize the frame
-    img = cv2.resize(img, (600, 500))
+    # Resize the frame for display
+    img_resized = cv2.resize(img, (320, 240))
 
     # Run YOLO model on the frame
-    results = model.predict(img)
+    results = model.predict(img_resized)
     detections = results[0].boxes.data
 
-    # Process detection results
+    # Process detection results for 'person' class only
     px = pd.DataFrame(detections).astype("float")
     new_person_detected = False
 
@@ -85,6 +97,7 @@ while True:
         d = int(row[5])
         c = class_list[d]
 
+        # Only process detections if the class is "person"
         if c == "person":
             new_person_detected = True
 
@@ -95,18 +108,35 @@ while True:
                 cv2.imwrite(image_filename, img)
                 print(f"New person detected, saving image as {image_filename}")
 
-            # Draw bounding box and label
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(img, str(c), (x1, y1), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 255, 0), 1)
+            # Draw bounding box and label for persons only
+            cv2.rectangle(img_resized, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(img_resized, str(c), (x1, y1), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 255, 0), 1)
 
     # Update the person_detected flag
     person_detected = new_person_detected
 
-    # Display the frame
-    cv2.imshow("Tello Feed", img)
-    if cv2.waitKey(1) & 0xFF == 27:  # Press ESC to exit
-        break
+    # Convert to grayscale for the second display
+    gray_img = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+    gray_img = cv2.cvtColor(gray_img, cv2.COLOR_GRAY2BGR)  # Convert back to BGR for consistency
 
-# Release resources
+    # Convert OpenCV frames to Pygame surfaces
+    img_surface = cv2_to_pygame(img_resized)
+    gray_img_surface = cv2_to_pygame(gray_img)
+
+    # Clear the window
+    window.fill((0, 0, 0))
+
+    # Blit (draw) the color and grayscale frames onto the Pygame window
+    window.blit(img_surface, (50, 50))  # Position the color frame at (50, 50)
+    window.blit(gray_img_surface, (400, 50))  # Position grayscale frame at (400, 50)
+   # window.blit(img_surface, (50, 400))  # Position the color frame at (50, 50)
+   # window.blit(gray_img_surface, (400, 400))  # Position grayscale frame at (400, 50)
+
+
+    # Update the display
+    pygame.display.update()
+
+# Cleanup
 tello.streamoff()
+pygame.quit()
 cv2.destroyAllWindows()
